@@ -1,11 +1,11 @@
-import React, { 
-  useState, 
-  useEffect, 
-  useCallback, 
+import React, {
+  useState,
+  useEffect,
+  useCallback,
   useMemo,
   createContext,
   useContext,
-  ReactNode 
+  ReactNode
 } from 'react';
 import { 
   initializeApp, 
@@ -23,22 +23,25 @@ import {
   Firestore,
   collection, 
   onSnapshot, 
+  addDoc,
   setLogLevel,
   Timestamp,
   DocumentData,
   QuerySnapshot
 } from 'firebase/firestore';
-import { 
-  Home, 
-  Package, 
-  ShoppingCart, 
-  Bell, 
-  X, 
-  Search, 
+import {
+  Home,
+  Package,
+  ShoppingCart,
+  Bell,
+  X,
+  Search,
   CheckCircle,
   AlertCircle,
   XCircle
 } from 'lucide-react';
+
+import DemoModeBanner from './components/DemoModeBanner';
 
 // ========== TYPES ==========
 interface Material {
@@ -93,6 +96,20 @@ const firebaseConfig: FirebaseConfig = {
   appId: process.env.REACT_APP_FIREBASE_APP_ID || '1:123456789:web:demo'
 };
 
+// Простая валидация API-ключа Firebase чтобы избежать попыток использовать placeholder'ы
+function isValidFirebaseApiKey(key?: string) {
+  if (!key) return false;
+  const trimmed = key.trim();
+  if (!trimmed) return false;
+  // Отбросим явно демонстрационные и явно неправильные плейсхолдеры
+  const lower = trimmed.toLowerCase();
+  if (lower === 'demo-key') return false;
+  if (lower.includes('your') || lower.includes('demo') || lower.includes('replace') || lower.includes('api_key')) return false;
+  // Обычные веб-ключи Firebase обычно имеют длину > 20 символов
+  if (trimmed.length < 20) return false;
+  return true;
+}
+
 // ========== CONTEXTS ==========
 const NotificationContext = createContext<NotificationContextType>({
   showNotification: () => {}
@@ -109,7 +126,8 @@ const useNotificationContext = () => {
 
 const useMaterials = (db: Firestore | null): { 
   materials: Material[]; 
-  loading: boolean 
+  loading: boolean;
+  addMaterial: (m: Omit<Material, 'id'>) => Promise<void>;
 } => {
   const [materials, setMaterials] = useState<Material[]>([]);
   const [loading, setLoading] = useState(true);
@@ -183,7 +201,23 @@ const useMaterials = (db: Firestore | null): {
     return unsubscribe;
   }, [db]);
 
-  return { materials, loading };
+  const addMaterial = async (m: Omit<Material, 'id'>) => {
+    if (!db) {
+      // Просто добавляем в локальный стейт (demo)
+      const newItem: Material = { id: Date.now().toString(), ...m };
+      setMaterials(prev => [...prev, newItem]);
+      return;
+    }
+
+    try {
+      await addDoc(collection(db, 'materials'), m as any);
+    } catch (error) {
+      console.error('Error adding material:', error);
+      throw error;
+    }
+  };
+
+  return { materials, loading, addMaterial };
 };
 
 const useOrders = (db: Firestore | null): { 
@@ -250,6 +284,42 @@ const formatDate = (timestamp: Timestamp | null): string => {
 };
 
 // ========== COMPONENTS ==========
+
+// Simple Modal component
+interface ModalProps {
+  open: boolean;
+  title?: string;
+  onClose: () => void;
+  children: ReactNode;
+}
+
+const Modal: React.FC<ModalProps> = ({ open, title, onClose, children }) => {
+  const modalRef = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black opacity-50" onClick={onClose}></div>
+      <div
+        ref={modalRef}
+        className="bg-white rounded-lg shadow-lg z-10 max-w-2xl w-full p-6 transform transition-all duration-150 ease-out scale-100 opacity-100"
+        style={{ animation: 'modal-in 150ms ease-out' }}
+      >
+        {title && <h2 className="text-xl font-semibold mb-4">{title}</h2>}
+        {children}
+      </div>
+      <style>{`@keyframes modal-in { from { transform: translateY(-8px) scale(.98); opacity: 0 } to { transform: translateY(0) scale(1); opacity: 1 } }`}</style>
+    </div>
+  );
+};
 
 // Notification Component
 interface NotificationProps {
@@ -355,9 +425,9 @@ const FirebaseProvider: React.FC<FirebaseProviderProps> = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Проверяем, есть ли настроенный Firebase
-    if (!firebaseConfig.apiKey || firebaseConfig.apiKey === 'demo-key') {
-      console.warn('Firebase не настроен. Используются демо данные.');
+    // Проверяем, есть ли настроенный и валидный Firebase API-ключ
+    if (!isValidFirebaseApiKey(firebaseConfig.apiKey)) {
+      console.warn('Firebase не настроен или API-ключ невалиден. Используются демо данные.');
       setUser({ uid: 'demo-user' } as FirebaseUser);
       setLoading(false);
       return;
@@ -504,8 +574,11 @@ const DashboardPage: React.FC<DashboardPageProps> = React.memo(({
 });
 
 // Materials Page
-const MaterialsPage: React.FC<{ materials: Material[] }> = React.memo(({ materials }) => {
+const MaterialsPage: React.FC<{ materials: Material[]; addMaterial?: (m: Omit<Material, 'id'>) => Promise<void> }> = React.memo(({ materials, addMaterial }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  const { showNotification } = useNotificationContext();
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ name: '', category: '', unit: '', currentStock: 0, minStock: 0 });
 
   const filteredMaterials = useMemo(() => {
     return materials
@@ -513,10 +586,43 @@ const MaterialsPage: React.FC<{ materials: Material[] }> = React.memo(({ materia
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [materials, searchTerm]);
 
+  const handleAdd = async () => {
+    if (!form.name.trim()) {
+      showNotification('Введите название материала', 'warning');
+      return;
+    }
+
+    const payload: Omit<Material, 'id'> = {
+      name: form.name.trim(),
+      category: form.category.trim() || 'Без категории',
+      unit: form.unit.trim() || 'шт',
+      currentStock: Number(form.currentStock) || 0,
+      minStock: Number(form.minStock) || 0,
+    };
+
+    try {
+      if (addMaterial) await addMaterial(payload);
+      showNotification('Материал добавлен', 'success');
+      setForm({ name: '', category: '', unit: '', currentStock: 0, minStock: 0 });
+      setShowForm(false);
+    } catch (err) {
+      console.error(err);
+      showNotification('Ошибка при добавлении материала', 'error');
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold text-gray-900">Материалы на складе</h1>
+        <div>
+          <button
+            onClick={() => setShowForm(s => !s)}
+            className="ml-4 inline-flex items-center px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700"
+          >
+            Добавить материал
+          </button>
+        </div>
       </div>
 
       <div className="relative">
@@ -531,6 +637,20 @@ const MaterialsPage: React.FC<{ materials: Material[] }> = React.memo(({ materia
           className="w-full p-2 pl-10 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
         />
       </div>
+
+      <Modal open={showForm} title="Новый материал" onClose={() => setShowForm(false)}>
+        <div className="grid grid-cols-2 gap-3">
+          <input className="border p-2 rounded" placeholder="Название" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+          <input className="border p-2 rounded" placeholder="Категория" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} />
+          <input className="border p-2 rounded" placeholder="Единица (e.g. шт, м, л)" value={form.unit} onChange={e => setForm(f => ({ ...f, unit: e.target.value }))} />
+          <input type="number" className="border p-2 rounded" placeholder="Остаток" value={form.currentStock} onChange={e => setForm(f => ({ ...f, currentStock: Number(e.target.value) }))} />
+          <input type="number" className="border p-2 rounded" placeholder="Мин. запас" value={form.minStock} onChange={e => setForm(f => ({ ...f, minStock: Number(e.target.value) }))} />
+        </div>
+        <div className="mt-3 flex gap-2">
+          <button onClick={handleAdd} className="px-3 py-2 bg-blue-600 text-white rounded">Сохранить</button>
+          <button onClick={() => setShowForm(false)} className="px-3 py-2 bg-gray-200 rounded">Отмена</button>
+        </div>
+      </Modal>
 
       <div className="bg-white shadow overflow-hidden sm:rounded-md">
         <table className="min-w-full divide-y divide-gray-200">
@@ -691,7 +811,7 @@ interface AppContentProps {
 const AppContent: React.FC<AppContentProps> = React.memo(({ db }) => {
   const [page, setPage] = useState<PageType>('dashboard');
   
-  const { materials, loading: materialsLoading } = useMaterials(db);
+  const { materials, loading: materialsLoading, addMaterial } = useMaterials(db);
   const { orders, loading: ordersLoading } = useOrders(db);
   
   const isDemoMode = !db || !process.env.REACT_APP_FIREBASE_API_KEY;
@@ -709,7 +829,7 @@ const AppContent: React.FC<AppContentProps> = React.memo(({ db }) => {
       case 'dashboard':
         return <DashboardPage materials={materials} orders={orders} setPage={setPage} />;
       case 'materials':
-        return <MaterialsPage materials={materials} />;
+        return <MaterialsPage materials={materials} addMaterial={addMaterial} />;
       case 'orders':
         return <OrdersPage orders={orders} materials={materials} />;
       default:
