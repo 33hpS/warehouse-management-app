@@ -53,10 +53,6 @@
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.17"
   },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/33hpS/warehouse-management-app.git"
-  },
   "keywords": [
     "warehouse",
     "inventory",
@@ -66,5 +62,9 @@
     "firebase",
     "tailwind"
   ],
-  "homepage": "https://33hpS.github.io/warehouse-management-app"
+  "homepage": "https://33hpS.github.io/warehouse-management-app",
+  "repository": {
+    "url": "https://github.com/33hpS/warehouse-management-app.git",
+    "type": "git"
+  }
 }

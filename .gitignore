@@ -20,13 +20,10 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-lerna-debug.log*
 
 # IDE files
 .vscode/
 .idea/
-*.swp
-*.swo
 
 # OS files
 .DS_Store
@@ -35,16 +32,6 @@ Thumbs.db
 # Firebase
 .firebase/
 firebase-debug.log
-firestore-debug.log
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
 
 # ESLint cache
 .eslintcache
-
-# Optional npm cache directory
-.npm
