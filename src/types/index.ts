@@ -5,6 +5,7 @@ export interface Material {
   unit: string;
   currentStock: number;
   minStock: number;
+  order?: number; // для сортировки
 }
 
 export interface Receipt {
@@ -14,11 +15,33 @@ export interface Receipt {
   date: any; // Firestore Timestamp
 }
 
+export interface Reception {
+  id: string;
+  materialId?: string;
+  materialName: string;
+  quantity: number;
+  comment?: string;
+  date: any; // Firestore Timestamp
+  userId?: string;
+}
+
 export interface Order {
   id: string;
   orderNumber: string;
   status: OrderStatus;
   createdAt: any; // Firestore Timestamp
+  items?: Array<{
+    materialId: string;
+    quantity: number;
+    source?: 'manual' | 'tech-card';
+    techCardName?: string;
+  }>;
+  techCards?: Array<{
+    name: string;
+    data?: any;
+    customName?: string;
+    rows?: any[];
+  }>;
 }
 
 export interface TechCardItem {

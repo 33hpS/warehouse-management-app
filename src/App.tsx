@@ -7,27 +7,17 @@ import React, {
   useContext,
   ReactNode
 } from 'react';
-import { 
-  initializeApp, 
-  FirebaseApp 
-} from 'firebase/app';
+import { getApp } from 'firebase/app';
 import { 
   getAuth, 
-  Auth,
   signInAnonymously, 
   onAuthStateChanged, 
   User as FirebaseUser 
 } from 'firebase/auth';
+import { getFirestore } from 'firebase/firestore';
+import { ensureFirebaseApp } from './config/firebase';
 import { 
-  getFirestore, 
-  Firestore,
-  collection, 
-  onSnapshot, 
-  addDoc,
-  setLogLevel,
   Timestamp,
-  DocumentData,
-  QuerySnapshot
 } from 'firebase/firestore';
 import {
   Home,
@@ -40,42 +30,44 @@ import {
   AlertCircle,
   XCircle
 } from 'lucide-react';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import {
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+
+// Новый абстрактный сервис БД
+import { DatabaseServiceFactory, IDatabaseService } from './services';
+import { Material, Order, OrderStatus, PageType, NotificationType } from './types';
 
 import DemoModeBanner from './components/DemoModeBanner';
+import Modal from './components/Modal';
+import NewMaterialForm from './components/NewMaterialForm';
+import WeatherWidget from './components/WeatherWidget';
+import CurrencyWidget from './components/CurrencyWidget';
+import DateCalendarWidget from './components/DateCalendarWidget';
+import ReceptionHistoryModal from './components/ReceptionHistoryModal';
+import ImportMaterials from './components/ImportMaterials';
+import NewOrderForm from './components/NewOrderForm';
 
 // ========== TYPES ==========
-interface Material {
-  id: string;
-  name: string;
-  category: string;
-  unit: string;
-  currentStock: number;
-  minStock: number;
-}
-
-interface Order {
-  id: string;
-  orderNumber: string;
-  status: OrderStatus;
-  createdAt: Timestamp;
-}
-
-interface FirebaseConfig {
-  apiKey: string;
-  authDomain: string;
-  projectId: string;
-  storageBucket: string;
-  messagingSenderId: string;
-  appId: string;
-}
-
 interface NotificationContextType {
   showNotification: (message: string, type?: NotificationType) => void;
 }
-
-type OrderStatus = 'В работе' | 'Выполнен' | 'Отменен';
-type NotificationType = 'success' | 'error' | 'warning' | 'info';
-type PageType = 'dashboard' | 'materials' | 'orders';
 
 // ========== CONSTANTS ==========
 const ORDER_STATUSES: Record<string, OrderStatus> = {
@@ -86,37 +78,48 @@ const ORDER_STATUSES: Record<string, OrderStatus> = {
 
 const NOTIFICATION_DURATION = 5000;
 
-// Конфигурация Firebase
-const firebaseConfig: FirebaseConfig = {
-  apiKey: process.env.REACT_APP_FIREBASE_API_KEY || 'demo-key',
-  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || 'demo-project.firebaseapp.com',
-  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || 'demo-project',
-  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || 'demo-project.appspot.com',
-  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID || '123456789',
-  appId: process.env.REACT_APP_FIREBASE_APP_ID || '1:123456789:web:demo'
-};
+// The following code is no longer needed as the configuration is handled by the DatabaseServiceFactory
+// // Конфигурация Firebase
+// const firebaseConfig: FirebaseConfig = {
+//   apiKey: process.env.REACT_APP_FIREBASE_API_KEY || 'demo-key',
+//   authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || 'demo-project.firebaseapp.com',
+//   projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || 'demo-project',
+//   storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || 'demo-project.appspot.com',
+//   messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID || '123456789',
+//   appId: process.env.REACT_APP_FIREBASE_APP_ID || '1:123456789:web:demo'
+// };
 
-// Простая валидация API-ключа Firebase чтобы избежать попыток использовать placeholder'ы
-function isValidFirebaseApiKey(key?: string) {
-  if (!key) return false;
-  const trimmed = key.trim();
-  if (!trimmed) return false;
-  // Отбросим явно демонстрационные и явно неправильные плейсхолдеры
-  const lower = trimmed.toLowerCase();
-  if (lower === 'demo-key') return false;
-  if (lower.includes('your') || lower.includes('demo') || lower.includes('replace') || lower.includes('api_key')) return false;
-  // Обычные веб-ключи Firebase обычно имеют длину > 20 символов
-  if (trimmed.length < 20) return false;
-  return true;
-}
+// // Простая валидация API-ключа Firebase чтобы избежать попыток использовать placeholder'ы
+// function isValidFirebaseApiKey(key?: string) {
+//   if (!key) return false;
+//   const trimmed = key.trim();
+//   if (!trimmed) return false;
+//   // Отбросим явно демонстрационные и явно неправильные плейсхолдеры
+//   const lower = trimmed.toLowerCase();
+//   if (lower === 'demo-key') return false;
+//   if (lower.includes('your') || lower.includes('demo') || lower.includes('replace') || lower.includes('api_key')) return false;
+//   // Обычные веб-ключи Firebase обычно имеют длину > 20 символов
+//   if (trimmed.length < 20) return false;
+//   return true;
+// }
 
 // ========== CONTEXTS ==========
 const NotificationContext = createContext<NotificationContextType>({
   showNotification: () => {}
 });
 
+const DatabaseContext = createContext<{
+  dbService: IDatabaseService | null;
+  isLoading: boolean;
+  user: FirebaseUser | null;
+}>({
+  dbService: null,
+  isLoading: true,
+  user: null,
+});
+
 // ========== HOOKS ==========
-const useNotificationContext = () => {
+export const useNotificationContext = () => {
   const context = useContext(NotificationContext);
   if (!context) {
     throw new Error('useNotificationContext must be used within NotificationProvider');
@@ -124,202 +127,315 @@ const useNotificationContext = () => {
   return context;
 };
 
-const useMaterials = (db: Firestore | null): { 
-  materials: Material[]; 
-  loading: boolean;
-  addMaterial: (m: Omit<Material, 'id'>) => Promise<void>;
-} => {
+export const useDatabase = () => useContext(DatabaseContext);
+
+const useMaterialsWithService = (dbService: IDatabaseService | null) => {
   const [materials, setMaterials] = useState<Material[]>([]);
   const [loading, setLoading] = useState(true);
+  const { showNotification } = useNotificationContext();
 
   useEffect(() => {
-    if (!db) {
-      // Демо данные если Firebase не подключен
-      const demoMaterials: Material[] = [
-        {
-          id: '1',
-          name: 'Цемент М400',
-          category: 'Строительные материалы',
-          unit: 'мешок',
-          currentStock: 5,
-          minStock: 10
-        },
-        {
-          id: '2',
-          name: 'Арматура 12мм',
-          category: 'Металлоконструкции',
-          unit: 'м',
-          currentStock: 150,
-          minStock: 100
-        },
-        {
-          id: '3',
-          name: 'Кирпич красный',
-          category: 'Строительные материалы',
-          unit: 'шт',
-          currentStock: 1000,
-          minStock: 200
-        },
-        {
-          id: '4',
-          name: 'Краска белая',
-          category: 'Отделочные материалы',
-          unit: 'л',
-          currentStock: 3,
-          minStock: 15
-        },
-        {
-          id: '5',
-          name: 'Гвозди 100мм',
-          category: 'Крепеж',
-          unit: 'кг',
-          currentStock: 2,
-          minStock: 5
-        }
-      ];
-      setMaterials(demoMaterials);
+    if (!dbService) {
       setLoading(false);
       return;
     }
 
-    const unsubscribe = onSnapshot(
-      collection(db, 'materials'),
-      (snapshot: QuerySnapshot<DocumentData>) => {
-        const materialsData = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as Material[];
-        setMaterials(materialsData);
-        setLoading(false);
-      },
-      (error) => {
-        console.error('Error fetching materials:', error);
-        setLoading(false);
-      }
-    );
+    setLoading(true);
+    const unsubscribe = dbService.subscribeMaterials?.((newMaterials) => {
+      setMaterials(newMaterials);
+      setLoading(false);
+    });
 
-    return unsubscribe;
-  }, [db]);
-
-  const addMaterial = async (m: Omit<Material, 'id'>) => {
-    if (!db) {
-      // Просто добавляем в локальный стейт (demo)
-      const newItem: Material = { id: Date.now().toString(), ...m };
-      setMaterials(prev => [...prev, newItem]);
-      return;
+    // Fallback for non-subscribable services
+    if (!unsubscribe) {
+      dbService.getMaterials().then(mats => {
+        setMaterials(mats);
+        setLoading(false);
+      }).catch(err => {
+        console.error("Failed to get materials", err);
+        setLoading(false);
+      });
     }
 
+    return () => unsubscribe?.();
+  }, [dbService]);
+
+  const addMaterial = useCallback(async (material: Omit<Material, 'id'>) => {
+    if (!dbService) return;
     try {
-      await addDoc(collection(db, 'materials'), m as any);
+      await dbService.addMaterial(material);
+      showNotification('Материал успешно добавлен', 'success');
     } catch (error) {
-      console.error('Error adding material:', error);
-      throw error;
+      showNotification('Ошибка при добавлении материала', 'error');
+      console.error(error);
     }
-  };
+  }, [dbService, showNotification]);
 
-  return { materials, loading, addMaterial };
+  const updateMaterial = useCallback(async (id: string, updates: Partial<Material>) => {
+    if (!dbService) return;
+    try {
+      await dbService.updateMaterial(id, updates);
+      showNotification('Материал успешно обновлен', 'success');
+    } catch (error) {
+      showNotification('Ошибка при обновлении материала', 'error');
+      console.error(error);
+    }
+  }, [dbService, showNotification]);
+
+  const receiveMaterial = useCallback(async (id: string, quantity: number, comment: string) => {
+    if (!dbService) return;
+    try {
+      await dbService.receiveMaterial(id, quantity, comment);
+      showNotification('Материал успешно принят', 'success');
+    } catch (error) {
+      showNotification('Ошибка при приемке материала', 'error');
+      console.error(error);
+    }
+  }, [dbService, showNotification]);
+
+  const reorderMaterials = useCallback(async (reorderedMaterials: Material[]) => {
+    if (!dbService) return;
+    try {
+      await dbService.reorderMaterials(reorderedMaterials);
+      showNotification('Порядок материалов обновлен', 'success');
+    } catch (error) {
+      showNotification('Ошибка при обновлении порядка', 'error');
+      console.error(error);
+    }
+  }, [dbService, showNotification]);
+
+  return { materials, loading, addMaterial, updateMaterial, receiveMaterial, reorderMaterials };
 };
 
-const useOrders = (db: Firestore | null): { 
-  orders: Order[]; 
-  loading: boolean 
-} => {
+const useOrdersWithService = (dbService: IDatabaseService | null) => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const { showNotification } = useNotificationContext();
 
   useEffect(() => {
-    if (!db) {
-      // Демо данные если Firebase не подключен
-      const demoOrders: Order[] = [
-        {
-          id: '1',
-          orderNumber: 'ORD-2024-001',
-          status: 'В работе',
-          createdAt: { toMillis: () => Date.now(), toDate: () => new Date() } as Timestamp
-        },
-        {
-          id: '2',
-          orderNumber: 'ORD-2024-002',
-          status: 'Выполнен',
-          createdAt: { toMillis: () => Date.now() - 86400000, toDate: () => new Date(Date.now() - 86400000) } as Timestamp
-        },
-        {
-          id: '3',
-          orderNumber: 'ORD-2024-003',
-          status: 'В работе',
-          createdAt: { toMillis: () => Date.now() - 172800000, toDate: () => new Date(Date.now() - 172800000) } as Timestamp
-        }
-      ];
-      setOrders(demoOrders);
+    if (!dbService) {
       setLoading(false);
       return;
     }
 
-    const unsubscribe = onSnapshot(
-      collection(db, 'orders'),
-      (snapshot: QuerySnapshot<DocumentData>) => {
-        const ordersData = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as Order[];
-        setOrders(ordersData);
-        setLoading(false);
-      },
-      (error) => {
-        console.error('Error fetching orders:', error);
-        setLoading(false);
-      }
-    );
+    setLoading(true);
+    const unsubscribe = dbService.subscribeOrders?.((newOrders) => {
+      setOrders(newOrders);
+      setLoading(false);
+    });
 
-    return unsubscribe;
-  }, [db]);
+    if (!unsubscribe) {
+      dbService.getOrders().then(ords => {
+        setOrders(ords);
+        setLoading(false);
+      }).catch(err => {
+        console.error("Failed to get orders", err);
+        setLoading(false);
+      });
+    }
 
-  return { orders, loading };
+    return () => unsubscribe?.();
+  }, [dbService]);
+
+  const addOrder = useCallback(async (order: Omit<Order, 'id' | 'createdAt'>) => {
+    if (!dbService) return;
+    try {
+      await dbService.addOrder(order);
+      showNotification('Заказ успешно создан', 'success');
+    } catch (error) {
+      showNotification('Ошибка при создании заказа', 'error');
+      console.error(error);
+    }
+  }, [dbService, showNotification]);
+
+  const updateOrder = useCallback(async (id: string, updates: Partial<Order>) => {
+    if (!dbService) return;
+    try {
+      await dbService.updateOrder(id, updates);
+      showNotification('Заказ успешно обновлен', 'success');
+    } catch (error) {
+      showNotification('Ошибка при обновлении заказа', 'error');
+      console.error(error);
+    }
+  }, [dbService, showNotification]);
+
+  return { orders, loading, addOrder, updateOrder };
 };
 
 // ========== UTILITY FUNCTIONS ==========
-const formatDate = (timestamp: Timestamp | null): string => {
+const formatDate = (timestamp: any): string => {
   if (!timestamp) return 'Неизвестно';
-  return timestamp.toDate().toLocaleDateString('ru-RU');
+  
+  try {
+    // Handle Firebase Timestamp with toDate method
+    if (timestamp && typeof timestamp === 'object' && timestamp.toDate && typeof timestamp.toDate === 'function') {
+      return timestamp.toDate().toLocaleDateString('ru-RU');
+    }
+    
+    // Handle plain Date object
+    if (timestamp instanceof Date) {
+      return timestamp.toLocaleDateString('ru-RU');
+    }
+    
+    // Handle timestamp with seconds property (Firestore format)
+    if (timestamp && typeof timestamp === 'object' && timestamp.seconds) {
+      return new Date(timestamp.seconds * 1000).toLocaleDateString('ru-RU');
+    }
+    
+    // Handle timestamp as number (milliseconds)
+    if (typeof timestamp === 'number') {
+      return new Date(timestamp).toLocaleDateString('ru-RU');
+    }
+    
+    // Handle timestamp as string
+    if (typeof timestamp === 'string') {
+      const date = new Date(timestamp);
+      return isNaN(date.getTime()) ? 'Неизвестно' : date.toLocaleDateString('ru-RU');
+    }
+    
+    // Log unexpected timestamp format for debugging
+    console.warn('Unexpected timestamp format:', timestamp, 'Type:', typeof timestamp);
+    return 'Неизвестно';
+  } catch (error) {
+    console.error('Error formatting date:', error, 'Timestamp:', timestamp);
+    return 'Неизвестно';
+  }
 };
 
-// ========== COMPONENTS ==========
+// ========== PROVIDERS ==========
 
-// Simple Modal component
-interface ModalProps {
-  open: boolean;
-  title?: string;
-  onClose: () => void;
+// NotificationProvider Component
+interface NotificationProviderProps {
   children: ReactNode;
 }
 
-const Modal: React.FC<ModalProps> = ({ open, title, onClose, children }) => {
-  const modalRef = React.useRef<HTMLDivElement | null>(null);
-  React.useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+const NotificationProvider: React.FC<NotificationProviderProps> = ({ children }) => {
+  const [notifications, setNotifications] = useState<Array<{
+    id: string;
+    message: string;
+    type: NotificationType;
+  }>>([]);
 
-  if (!open) return null;
+  const showNotification = useCallback((message: string, type: NotificationType = 'info') => {
+    const id = Date.now().toString();
+    setNotifications(prev => [...prev, { id, message, type }]);
+  }, []);
+
+  const removeNotification = useCallback((id: string) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
+  }, []);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black opacity-50" onClick={onClose}></div>
-      <div
-        ref={modalRef}
-        className="bg-white rounded-lg shadow-lg z-10 max-w-2xl w-full p-6 transform transition-all duration-150 ease-out scale-100 opacity-100"
-        style={{ animation: 'modal-in 150ms ease-out' }}
-      >
-        {title && <h2 className="text-xl font-semibold mb-4">{title}</h2>}
-        {children}
-      </div>
-      <style>{`@keyframes modal-in { from { transform: translateY(-8px) scale(.98); opacity: 0 } to { transform: translateY(0) scale(1); opacity: 1 } }`}</style>
-    </div>
+    <NotificationContext.Provider value={{ showNotification }}>
+      {children}
+      {notifications.map(notification => (
+        <Notification
+          key={notification.id}
+          message={notification.message}
+          type={notification.type}
+          onClose={() => removeNotification(notification.id)}
+        />
+      ))}
+    </NotificationContext.Provider>
   );
 };
+
+// Database Provider
+interface DatabaseProviderProps {
+  children: ReactNode;
+}
+
+const DatabaseProvider: React.FC<DatabaseProviderProps> = ({ children }) => {
+  const [dbService, setDbService] = useState<IDatabaseService | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const initialize = async () => {
+      try {
+        const config = DatabaseServiceFactory.detectProvider();
+        if (config.provider === 'firebase') {
+          // Ensure app is initialized (may return null if env vars missing)
+          const ensured = ensureFirebaseApp();
+          if (!ensured) {
+            console.warn('Firebase config missing or invalid, switching to demo mode');
+            const demoService = DatabaseServiceFactory.create({ provider: 'demo', config: {} });
+            await demoService.initialize();
+            setDbService(demoService);
+            setUser(demoService.getCurrentUser());
+            setIsLoading(false);
+            return;
+          }
+          const app = getApp();
+          const auth = getAuth(app);
+          onAuthStateChanged(auth, async (firebaseUser) => {
+            if (firebaseUser) {
+              // User is signed in.
+              const db = getFirestore(app);
+              const service = DatabaseServiceFactory.create(config, { db, user: firebaseUser });
+              setUser(firebaseUser);
+              await service.initialize();
+              setDbService(service);
+              setIsLoading(false);
+            } else {
+              // User is signed out. Try to sign in anonymously.
+              try {
+                await signInAnonymously(auth);
+                // The listener will re-run with the new anonymous user.
+              } catch (authError) {
+                console.error("Anonymous sign-in failed, falling back to demo mode.", authError);
+                const demoService = DatabaseServiceFactory.create({ provider: 'demo', config: {} });
+                await demoService.initialize();
+                setDbService(demoService);
+                setUser(demoService.getCurrentUser());
+                setIsLoading(false);
+              }
+            }
+          });
+        } else {
+          // For demo or other providers that don't have complex auth states
+          const service = DatabaseServiceFactory.create(config);
+          await service.initialize();
+          setDbService(service);
+          setUser(service.getCurrentUser());
+          setIsLoading(false);
+        }
+      } catch (e: any) {
+        console.error("Failed to initialize database provider:", e);
+        setError(e.message);
+        // Fallback to demo mode on any initialization error
+        try {
+          const demoService = DatabaseServiceFactory.create({ provider: 'demo', config: {} });
+          await demoService.initialize();
+          setDbService(demoService);
+          setUser(demoService.getCurrentUser());
+        } catch (demoError) {
+           console.error("Failed to initialize demo mode fallback:", demoError);
+           setError(e.message + ' | Demo fallback also failed: ' + (demoError as any).message);
+        }
+        setIsLoading(false);
+      }
+    };
+
+    initialize();
+  }, []);
+
+  const value = { dbService, isLoading, user };
+
+  if (error) {
+    return <div className="text-red-500 p-4">Error initializing database: {error}</div>;
+  }
+
+  return (
+    <DatabaseContext.Provider value={value}>
+      {children}
+    </DatabaseContext.Provider>
+  );
+};
+
+
+// ========== COMPONENTS ==========
 
 // Notification Component
 interface NotificationProps {
@@ -372,112 +488,6 @@ const Notification: React.FC<NotificationProps> = React.memo(({
   );
 });
 
-// NotificationProvider Component
-interface NotificationProviderProps {
-  children: ReactNode;
-}
-
-const NotificationProvider: React.FC<NotificationProviderProps> = ({ children }) => {
-  const [notifications, setNotifications] = useState<Array<{
-    id: string;
-    message: string;
-    type: NotificationType;
-  }>>([]);
-
-  const showNotification = useCallback((message: string, type: NotificationType = 'info') => {
-    const id = Date.now().toString();
-    setNotifications(prev => [...prev, { id, message, type }]);
-  }, []);
-
-  const removeNotification = useCallback((id: string) => {
-    setNotifications(prev => prev.filter(n => n.id !== id));
-  }, []);
-
-  return (
-    <NotificationContext.Provider value={{ showNotification }}>
-      {children}
-      {notifications.map(notification => (
-        <Notification
-          key={notification.id}
-          message={notification.message}
-          type={notification.type}
-          onClose={() => removeNotification(notification.id)}
-        />
-      ))}
-    </NotificationContext.Provider>
-  );
-};
-
-// Firebase Provider
-interface FirebaseProviderProps {
-  children: (context: {
-    db: Firestore | null;
-    auth: Auth | null; 
-    user: FirebaseUser | null;
-    loading: boolean;
-  }) => ReactNode;
-}
-
-const FirebaseProvider: React.FC<FirebaseProviderProps> = ({ children }) => {
-  const [db, setDb] = useState<Firestore | null>(null);
-  const [auth, setAuth] = useState<Auth | null>(null);
-  const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    // Проверяем, есть ли настроенный и валидный Firebase API-ключ
-    if (!isValidFirebaseApiKey(firebaseConfig.apiKey)) {
-      console.warn('Firebase не настроен или API-ключ невалиден. Используются демо данные.');
-      setUser({ uid: 'demo-user' } as FirebaseUser);
-      setLoading(false);
-      return;
-    }
-
-    try {
-      const app: FirebaseApp = initializeApp(firebaseConfig);
-      const firestoreDb = getFirestore(app);
-      const firebaseAuth = getAuth(app);
-
-      setDb(firestoreDb);
-      setAuth(firebaseAuth);
-      setLogLevel('error');
-
-      const unsubscribe = onAuthStateChanged(firebaseAuth, async (currentUser) => {
-        if (currentUser) {
-          setUser(currentUser);
-        } else {
-          try {
-            await signInAnonymously(firebaseAuth);
-          } catch (error) {
-            console.error("Ошибка анонимной аутентификации:", error);
-          }
-        }
-        setLoading(false);
-      });
-
-      return unsubscribe;
-    } catch (error) {
-      console.error("Ошибка инициализации Firebase:", error);
-      setUser({ uid: 'demo-user' } as FirebaseUser);
-      setLoading(false);
-    }
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center min-h-screen">
-        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-600"></div>
-      </div>
-    );
-  }
-
-  return (
-    <>
-      {children({ db, auth, user, loading })}
-    </>
-  );
-};
-
 // StatCard Component
 interface StatCardProps {
   title: string;
@@ -510,7 +520,7 @@ const DashboardPage: React.FC<DashboardPageProps> = React.memo(({
   setPage 
 }) => {
   const lowStockMaterials = useMemo(() => 
-    materials.filter(m => m.currentStock <= m.minStock), 
+    materials.filter(m => m.currentStock < m.minStock), 
     [materials]
   );
 
@@ -573,17 +583,176 @@ const DashboardPage: React.FC<DashboardPageProps> = React.memo(({
   );
 });
 
+// Компонент для перетаскиваемой строки материала
+interface SortableMaterialRowProps {
+  material: Material;
+  isLowStock: boolean;
+  onHistoryClick: (material: Material) => void;
+  onEditClick: (material: Material) => void;
+  onReceiveClick: (material: Material) => void;
+}
+
+const SortableMaterialRow: React.FC<SortableMaterialRowProps> = ({
+  material,
+  isLowStock,
+  onHistoryClick,
+  onEditClick,
+  onReceiveClick,
+}) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: material.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <tr 
+      ref={setNodeRef}
+      style={style}
+      className={`${isLowStock ? 'bg-red-50 border-red-200' : 'hover:bg-gray-50'} ${isDragging ? 'shadow-lg' : ''}`}
+    >
+      <td className="px-6 py-4 whitespace-nowrap">
+        <div className="flex items-center space-x-3">
+          <div
+            {...attributes}
+            {...listeners}
+            className="cursor-grab hover:cursor-grabbing p-1 text-gray-400 hover:text-gray-600"
+            title="Перетащите для изменения порядка"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <circle cx="3" cy="3" r="1" />
+              <circle cx="3" cy="8" r="1" />
+              <circle cx="3" cy="13" r="1" />
+              <circle cx="8" cy="3" r="1" />
+              <circle cx="8" cy="8" r="1" />
+              <circle cx="8" cy="13" r="1" />
+              <circle cx="13" cy="3" r="1" />
+              <circle cx="13" cy="8" r="1" />
+              <circle cx="13" cy="13" r="1" />
+            </svg>
+          </div>
+          <button
+            className={`text-sm font-medium ${isLowStock ? 'text-red-700' : 'text-blue-700'} hover:underline focus:outline-none`}
+            onClick={() => onHistoryClick(material)}
+          >
+            {material.name}
+          </button>
+        </div>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap">
+        <div className={`text-sm ${isLowStock ? 'text-red-700' : 'text-gray-900'}`}>
+          {material.category}
+        </div>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap">
+        <div className={`text-sm font-medium ${isLowStock ? 'text-red-700' : 'text-gray-900'}`}>
+          {material.currentStock} {material.unit}
+        </div>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap">
+        <div className={`text-sm ${isLowStock ? 'text-red-700' : 'text-gray-900'}`}>
+          {material.minStock} {material.unit}
+        </div>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+        <button
+          onClick={() => onEditClick(material)}
+          className="text-indigo-600 hover:text-indigo-900 ml-4"
+        >
+          Редактировать
+        </button>
+        <button
+          onClick={() => onReceiveClick(material)}
+          className="text-blue-600 hover:text-blue-900 ml-4"
+        >
+          Принять
+        </button>
+      </td>
+    </tr>
+  );
+};
+
 // Materials Page
-const MaterialsPage: React.FC<{ materials: Material[]; addMaterial?: (m: Omit<Material, 'id'>) => Promise<void> }> = React.memo(({ materials, addMaterial }) => {
+interface MaterialsPageProps {
+  materials: Material[];
+  addMaterial: (m: Omit<Material, 'id'>) => Promise<void>;
+  updateMaterial: (id: string, m: Partial<Omit<Material, 'id'>>) => Promise<void>;
+  receiveMaterial: (id: string, quantity: number, comment: string) => Promise<void>;
+  reorderMaterials: (materials: Material[]) => Promise<void>;
+  dbService: IDatabaseService | null;
+}
+
+const MaterialsPage: React.FC<MaterialsPageProps> = React.memo(({ materials, addMaterial, updateMaterial, receiveMaterial, reorderMaterials, dbService }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const { showNotification } = useNotificationContext();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: '', category: '', unit: '', currentStock: 0, minStock: 0 });
+  const nameInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [editingMaterial, setEditingMaterial] = useState<Material | null>(null);
+  const [receivingMaterial, setReceivingMaterial] = useState<Material | null>(null);
+  const [receiveQuantity, setReceiveQuantity] = useState(1);
+  const [receiveComment, setReceiveComment] = useState('');
+  const [receiveDate, setReceiveDate] = useState('');
+  const [historyMaterial, setHistoryMaterial] = useState<Material | null>(null);
+
+  // Drag and drop sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  React.useEffect(() => {
+    if (showForm) {
+      setTimeout(() => nameInputRef.current?.focus(), 50);
+    }
+  }, [showForm]);
+
+  // Обработчик завершения перетаскивания
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+
+    if (active.id !== over?.id) {
+      const oldIndex = filteredMaterials.findIndex(item => item.id === active.id);
+      const newIndex = filteredMaterials.findIndex(item => item.id === over?.id);
+
+      const newOrderedMaterials = arrayMove(filteredMaterials, oldIndex, newIndex);
+      
+      // Обновляем порядок в базе данных
+      if (reorderMaterials) {
+        try {
+          await reorderMaterials(newOrderedMaterials);
+          showNotification('Порядок материалов изменен', 'success');
+        } catch (error) {
+          console.error('Error reordering materials:', error);
+          showNotification('Ошибка при изменении порядка', 'error');
+        }
+      }
+    }
+  };
 
   const filteredMaterials = useMemo(() => {
     return materials
       .filter(m => m.name.toLowerCase().includes(searchTerm.toLowerCase()))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => {
+        // Сначала по order (если есть), потом по имени
+        if (a.order !== undefined && b.order !== undefined) {
+          return a.order - b.order;
+        }
+        if (a.order !== undefined) return -1;
+        if (b.order !== undefined) return 1;
+        return a.name.localeCompare(b.name);
+      });
   }, [materials, searchTerm]);
 
   const handleAdd = async () => {
@@ -601,13 +770,58 @@ const MaterialsPage: React.FC<{ materials: Material[]; addMaterial?: (m: Omit<Ma
     };
 
     try {
-      if (addMaterial) await addMaterial(payload);
-      showNotification('Материал добавлен', 'success');
+      if (editingMaterial) {
+        if (updateMaterial) await updateMaterial(editingMaterial.id, payload);
+        showNotification('Материал обновлен', 'success');
+      } else {
+        if (addMaterial) {
+            await addMaterial({ ...payload, order: materials.length + 1 });
+        }
+        showNotification('Материал добавлен', 'success');
+      }
       setForm({ name: '', category: '', unit: '', currentStock: 0, minStock: 0 });
+      setEditingMaterial(null);
       setShowForm(false);
     } catch (err) {
       console.error(err);
-      showNotification('Ошибка при добавлении материала', 'error');
+      showNotification('Ошибка при сохранении материала', 'error');
+    }
+  };
+
+  const handleEditClick = (material: Material) => {
+    setEditingMaterial(material);
+    setForm({ 
+      name: material.name, 
+      category: material.category, 
+      unit: material.unit, 
+      currentStock: material.currentStock, 
+      minStock: material.minStock 
+    });
+    setShowForm(true);
+  };
+
+  const handleReceiveClick = (material: Material) => {
+    setReceivingMaterial(material);
+    setReceiveQuantity(1);
+    setReceiveComment('');
+    setReceiveDate('');
+  };
+
+  const handleReceiveSubmit = async () => {
+    if (!receivingMaterial || receiveQuantity <= 0) {
+      showNotification('Введите корректное количество для приемки', 'warning');
+      return;
+    }
+    try {
+      if (receiveMaterial) await receiveMaterial(receivingMaterial.id, receiveQuantity, receiveComment);
+      showNotification(`Принято ${receiveQuantity} ${receivingMaterial.unit} ${receivingMaterial.name}`, 'success');
+      setReceivingMaterial(null);
+      setReceiveQuantity(1);
+      setReceiveComment('');
+      setReceiveDate('');
+    } catch (err) {
+      console.error(err);
+      showNotification('Ошибка при приемке материала', 'error');
     }
   };
 
@@ -615,13 +829,14 @@ const MaterialsPage: React.FC<{ materials: Material[]; addMaterial?: (m: Omit<Ma
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold text-gray-900">Материалы на складе</h1>
-        <div>
+        <div className="flex items-center gap-3">
           <button
-            onClick={() => setShowForm(s => !s)}
+            onClick={() => { setEditingMaterial(null); setShowForm(true); }}
             className="ml-4 inline-flex items-center px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700"
           >
             Добавить материал
           </button>
+          <ImportMaterials addMaterial={addMaterial} showNotification={showNotification} />
         </div>
       </div>
 
@@ -638,63 +853,62 @@ const MaterialsPage: React.FC<{ materials: Material[]; addMaterial?: (m: Omit<Ma
         />
       </div>
 
-      <Modal open={showForm} title="Новый материал" onClose={() => setShowForm(false)}>
-        <div className="grid grid-cols-2 gap-3">
-          <input className="border p-2 rounded" placeholder="Название" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
-          <input className="border p-2 rounded" placeholder="Категория" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} />
-          <input className="border p-2 rounded" placeholder="Единица (e.g. шт, м, л)" value={form.unit} onChange={e => setForm(f => ({ ...f, unit: e.target.value }))} />
-          <input type="number" className="border p-2 rounded" placeholder="Остаток" value={form.currentStock} onChange={e => setForm(f => ({ ...f, currentStock: Number(e.target.value) }))} />
-          <input type="number" className="border p-2 rounded" placeholder="Мин. запас" value={form.minStock} onChange={e => setForm(f => ({ ...f, minStock: Number(e.target.value) }))} />
-        </div>
-        <div className="mt-3 flex gap-2">
-          <button onClick={handleAdd} className="px-3 py-2 bg-blue-600 text-white rounded">Сохранить</button>
-          <button onClick={() => setShowForm(false)} className="px-3 py-2 bg-gray-200 rounded">Отмена</button>
-        </div>
+      <Modal isOpen={showForm} title={editingMaterial ? 'Редактировать материал' : 'Новый материал'} onClose={() => setShowForm(false)}>
+        <NewMaterialForm
+          initial={form}
+          onCancel={() => setShowForm(false)}
+          onSave={handleAdd}
+        />
       </Modal>
 
       <div className="bg-white shadow overflow-hidden sm:rounded-md">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Название
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Категория
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Остаток
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Мин. запас
-              </th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {filteredMaterials.map(material => (
-              <tr key={material.id} className="hover:bg-gray-50">
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="text-sm font-medium text-gray-900">
-                    {material.name}
-                  </div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="text-sm text-gray-900">{material.category}</div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <div className={`text-sm ${material.currentStock <= material.minStock ? 'text-red-600 font-medium' : 'text-gray-900'}`}>
-                    {material.currentStock} {material.unit}
-                  </div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="text-sm text-gray-900">
-                    {material.minStock} {material.unit}
-                  </div>
-                </td>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
+        >
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Название
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Категория
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Остаток
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Мин. запас
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Действия
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <SortableContext 
+              items={filteredMaterials.map(m => m.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              <tbody className="bg-white divide-y divide-gray-200">
+                {filteredMaterials.map(material => {
+                  const isLowStock = material.currentStock <= material.minStock;
+                  return (
+                    <SortableMaterialRow
+                      key={material.id}
+                      material={material}
+                      isLowStock={isLowStock}
+                      onHistoryClick={setHistoryMaterial}
+                      onEditClick={handleEditClick}
+                      onReceiveClick={handleReceiveClick}
+                    />
+                  );
+                })}
+              </tbody>
+            </SortableContext>
+          </table>
+        </DndContext>
         
         {filteredMaterials.length === 0 && (
           <div className="text-center py-8 text-gray-500">
@@ -702,21 +916,111 @@ const MaterialsPage: React.FC<{ materials: Material[]; addMaterial?: (m: Omit<Ma
           </div>
         )}
       </div>
+
+      <Modal isOpen={showForm} title={editingMaterial ? 'Редактировать материал' : 'Новый материал'} onClose={() => setShowForm(false)}>
+        <NewMaterialForm
+          initial={form}
+          onCancel={() => setShowForm(false)}
+          onSave={handleAdd}
+        />
+      </Modal>
+      {historyMaterial && (
+        <ReceptionHistoryModal
+          isOpen={!!historyMaterial}
+          onClose={() => setHistoryMaterial(null)}
+          materialId={historyMaterial.id}
+          materialName={historyMaterial.name}
+          dbService={dbService}
+        />
+      )}
+
+      <Modal isOpen={!!receivingMaterial} title={`Приемка: ${receivingMaterial?.name || ''}`} onClose={() => setReceivingMaterial(null)}>
+        <div className="space-y-4">
+          <p>Введите количество для приемки:</p>
+          <input
+            type="number"
+            value={receiveQuantity}
+            onChange={e => setReceiveQuantity(Number(e.target.value))}
+            className="border p-2 rounded w-full"
+            min="1"
+          />
+          <p>Комментарий:</p>
+          <textarea
+            value={receiveComment}
+            onChange={e => setReceiveComment(e.target.value)}
+            className="border p-2 rounded w-full"
+            placeholder="Например, номер накладной или примечание"
+          />
+          <p>Дата приемки:</p>
+          <input
+            type="date"
+            value={receiveDate}
+            onChange={e => setReceiveDate(e.target.value)}
+            className="border p-2 rounded w-full"
+          />
+          <div className="flex justify-end gap-2">
+            <button onClick={handleReceiveSubmit} className="px-3 py-2 bg-blue-600 text-white rounded">Принять</button>
+            <button onClick={() => setReceivingMaterial(null)} className="px-3 py-2 bg-gray-200 rounded">Отмена</button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 });
 
 // Orders Page
-const OrdersPage: React.FC<{ orders: Order[]; materials: Material[] }> = React.memo(({ orders }) => {
+const OrdersPage: React.FC<{ 
+  orders: Order[]; 
+  materials: Material[]; 
+  addOrder: (o: Omit<Order, 'id' | 'createdAt'>) => Promise<void>; 
+  updateOrder: (id: string, o: Partial<Order>) => Promise<void>;
+  updateMaterial: (id: string, updates: Partial<Material>) => Promise<void>;
+}> = React.memo(({ orders, materials, addOrder, updateOrder, updateMaterial }) => {
+  const [showCreate, setShowCreate] = useState(false);
+  const [editingOrder, setEditingOrder] = useState<Order | null>(null);
+
   const sortedOrders = useMemo(() => 
-    [...orders].sort((a, b) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0)), 
+    [...orders].sort((a, b) => {
+      const aTime = a.createdAt ? (typeof a.createdAt.toMillis === 'function' ? a.createdAt.toMillis() : a.createdAt.seconds * 1000) : 0;
+      const bTime = b.createdAt ? (typeof b.createdAt.toMillis === 'function' ? b.createdAt.toMillis() : b.createdAt.seconds * 1000) : 0;
+      return bTime - aTime;
+    }), 
     [orders]
   );
+
+  const handleCreate = async (payload: Omit<Order, 'id' | 'createdAt'>) => {
+    if (!addOrder) return;
+    try {
+      await addOrder(payload);
+      setShowCreate(false);
+    } catch (err) {
+      console.error('Create order failed', err);
+      alert('Ошибка при создании заказа');
+    }
+  };
+
+  const handleEdit = async (payload: Partial<Order>) => {
+    if (!updateOrder || !editingOrder) return;
+    try {
+      await updateOrder(editingOrder.id, payload);
+      setEditingOrder(null);
+    } catch (err) {
+      console.error('Update order failed', err);
+      alert('Ошибка при обновлении заказа');
+    }
+  };
+
+  const handleOrderClick = (order: Order) => {
+    setEditingOrder(order);
+  };
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold text-gray-900">Заказы</h1>
+        <div>
+          <button onClick={() => setShowCreate(true)} className="px-3 py-2 bg-green-600 text-white rounded">Создать заказ</button>
+        </div>
       </div>
 
       <div className="bg-white shadow overflow-hidden sm:rounded-md">
@@ -735,10 +1039,10 @@ const OrdersPage: React.FC<{ orders: Order[]; materials: Material[] }> = React.m
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
-            {sortedOrders.map(order => (
-              <tr key={order.id} className="hover:bg-gray-50">
+            {sortedOrders.map((order) => (
+              <tr key={order.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => handleOrderClick(order)}>
                 <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="text-sm font-medium text-gray-900">
+                  <div className="text-sm font-medium text-blue-700 hover:text-blue-900">
                     {order.orderNumber}
                   </div>
                 </td>
@@ -769,6 +1073,41 @@ const OrdersPage: React.FC<{ orders: Order[]; materials: Material[] }> = React.m
           </div>
         )}
       </div>
+
+      {/* Create Order Modal */}
+      <Modal isOpen={showCreate} title="Создать заказ" onClose={() => setShowCreate(false)}>
+        <NewOrderForm
+          materials={materials.map(m => ({ 
+            id: m.id, 
+            name: m.name, 
+            unit: m.unit,
+            currentStock: m.currentStock,
+            minStock: m.minStock
+          }))}
+          updateMaterial={updateMaterial}
+          onCancel={() => setShowCreate(false)}
+          onCreate={async (payload) => handleCreate(payload)}
+        />
+      </Modal>
+
+      {/* Edit Order Modal */}
+      <Modal isOpen={!!editingOrder} title={`Редактировать заказ: ${editingOrder?.orderNumber || ''}`} onClose={() => setEditingOrder(null)}>
+        {editingOrder && (
+          <NewOrderForm
+            materials={materials.map(m => ({ 
+              id: m.id, 
+              name: m.name, 
+              unit: m.unit,
+              currentStock: m.currentStock,
+              minStock: m.minStock
+            }))}
+            updateMaterial={updateMaterial}
+            onCancel={() => setEditingOrder(null)}
+            onCreate={async (payload) => handleEdit(payload)}
+            initialOrder={editingOrder}
+          />
+        )}
+      </Modal>
     </div>
   );
 });
@@ -803,54 +1142,69 @@ const NavLink: React.FC<NavLinkProps> = React.memo(({
 ));
 
 // App Content Component
-interface AppContentProps {
-  db: Firestore | null;
-  user: FirebaseUser;
-}
+interface AppContentProps {}
 
-const AppContent: React.FC<AppContentProps> = React.memo(({ db }) => {
+const AppContent: React.FC<AppContentProps> = React.memo(() => {
+  const { dbService, isLoading, user } = useDatabase();
   const [page, setPage] = useState<PageType>('dashboard');
-  
-  const { materials, loading: materialsLoading, addMaterial } = useMaterials(db);
-  const { orders, loading: ordersLoading } = useOrders(db);
-  
-  const isDemoMode = !db || !process.env.REACT_APP_FIREBASE_API_KEY;
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isDemo, setIsDemo] = useState(false);
+
+  // Используем новые хуки
+  const { materials, loading: materialsLoading, addMaterial, updateMaterial, receiveMaterial, reorderMaterials } = useMaterialsWithService(dbService);
+  const { orders, loading: ordersLoading, addOrder, updateOrder } = useOrdersWithService(dbService);
+
+  useEffect(() => {
+    if (dbService) {
+      setIsDemo(dbService.config.provider === 'demo');
+    }
+  }, [dbService]);
+
+  const filteredMaterials = useMemo(() => {
+    const sorted = [...materials].sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+    if (!searchTerm) return sorted;
+    return sorted.filter(material =>
+      material.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (material.category && material.category.toLowerCase().includes(searchTerm.toLowerCase()))
+    );
+  }, [materials, searchTerm]);
 
   const renderPage = useMemo(() => {
     if (materialsLoading || ordersLoading) {
-      return (
-        <div className="flex justify-center items-center h-64">
-          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600"></div>
-        </div>
-      );
+        return (
+          <div className="flex justify-center items-center h-64">
+            <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600"></div>
+          </div>
+        );
     }
-
     switch (page) {
       case 'dashboard':
         return <DashboardPage materials={materials} orders={orders} setPage={setPage} />;
       case 'materials':
-        return <MaterialsPage materials={materials} addMaterial={addMaterial} />;
+        return <MaterialsPage materials={filteredMaterials} addMaterial={addMaterial} updateMaterial={updateMaterial} receiveMaterial={receiveMaterial} reorderMaterials={reorderMaterials} dbService={dbService} />;
       case 'orders':
-        return <OrdersPage orders={orders} materials={materials} />;
+        return <OrdersPage orders={orders} materials={materials} addOrder={addOrder} updateOrder={updateOrder} updateMaterial={updateMaterial} />;
       default:
-        return <DashboardPage materials={materials} orders={orders} setPage={setPage} />;
+        return <div>Page not found</div>;
     }
-  }, [page, materials, orders, materialsLoading, ordersLoading]);
+  }, [page, materials, orders, filteredMaterials, addMaterial, updateMaterial, receiveMaterial, reorderMaterials, dbService, addOrder, updateOrder, materialsLoading, ordersLoading]);
+
+  if (isLoading) {
+    return (
+      <div className="flex justify-center items-center h-screen">
+        <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
 
   return (
-    <div className="flex flex-col h-screen bg-gray-100">
-      <DemoModeBanner isDemo={isDemoMode} />
-      <div className="flex flex-1">
-        {/* Sidebar */}
-        <div className="w-64 bg-white shadow-md">
-          <div className="p-6">
-            <h1 className="text-xl font-bold text-gray-900">Склад-Учет</h1>
-            {isDemoMode && (
-              <p className="text-xs text-blue-600 mt-1">Демо версия</p>
-            )}
-          </div>
-          <nav className="px-4 space-y-2">
-            <NavLink
+    <div className="flex h-screen bg-gray-100">
+      <aside className="w-64 bg-white shadow-md flex flex-col sticky top-0 h-screen">
+        <div className="p-6 text-2xl font-bold text-blue-600 border-b">
+          Склад Pro
+        </div>
+        <nav className="flex-1 p-4 space-y-2">
+           <NavLink
               icon={<Home className="w-5 h-5" />}
               label="Панель"
               pageName="dashboard"
@@ -871,61 +1225,57 @@ const AppContent: React.FC<AppContentProps> = React.memo(({ db }) => {
               currentPage={page}
               onClick={setPage}
             />
-          </nav>
+        </nav>
+        <div className="p-4 border-t space-y-4">
+          <CurrencyWidget />
+          <WeatherWidget />
+          <DateCalendarWidget />
         </div>
+        <div className="p-4 text-xs text-gray-500 border-t">
+          <DemoModeBanner isDemo={isDemo} />
+          {user && (
+            <div className="mt-2">
+              <p>Пользователь: {user.isAnonymous ? 'Аноним' : user.email}</p>
+              <p>UID: {user.uid ? user.uid.substring(0, 10) + '...' : 'нет UID'}</p>
+            </div>
+          )}
+        </div>
+      </aside>
 
-        {/* Main content */}
-        <div className="flex-1 overflow-y-auto p-8">
+      {/* Main Content */}
+      <main className="flex-1 flex flex-col overflow-hidden">
+        <header className="bg-white shadow-sm p-4">
+          <div className="flex items-center">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+              <input
+                type="text"
+                placeholder="Поиск материалов..."
+                className="w-full pl-10 pr-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+            <button className="ml-4 text-gray-500 hover:text-gray-700">
+              <Bell size={24} />
+            </button>
+          </div>
+        </header>
+        <div className="flex-1 p-6 overflow-auto">
           {renderPage}
         </div>
-      </div>
+      </main>
     </div>
   );
 });
 
-// Test Notification Button
-const TestNotificationButton: React.FC = () => {
-  const { showNotification } = useNotificationContext();
-  
-  const handleTest = () => {
-    showNotification('Уведомление работает! ✅', 'success');
-  };
-
-  return (
-    <button
-      onClick={handleTest}
-      className="fixed bottom-4 right-4 bg-blue-600 text-white p-3 rounded-full shadow-lg hover:bg-blue-700 transition-colors"
-      title="Тест уведомления"
-    >
-      <Bell className="w-5 h-5" />
-    </button>
-  );
-};
-
-// Main App Component
+// App Component
 const App: React.FC = () => {
   return (
     <NotificationProvider>
-      <FirebaseProvider>
-        {({ db, user }) => {
-          if (!user) {
-            return (
-              <div className="flex justify-center items-center min-h-screen">
-                <div className="text-center">
-                  <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-600 mx-auto mb-4"></div>
-                  <p className="text-gray-600">Загрузка приложения...</p>
-                </div>
-              </div>
-            );
-          }
-          return (
-            <>
-              <AppContent db={db} user={user} />
-              <TestNotificationButton />
-            </>
-          );
-        }}
-      </FirebaseProvider>
+      <DatabaseProvider>
+        <AppContent />
+      </DatabaseProvider>
     </NotificationProvider>
   );
 };
